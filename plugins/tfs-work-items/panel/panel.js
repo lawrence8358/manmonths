@@ -1051,12 +1051,15 @@
         if (res.mode === 'existing') {
           showBanner(`#${selectedItem.id} 的內容已放入「${res.agent}」的輸入框，確認後請自行按 Enter 送出`, 'success');
         } else {
-          showBanner(`已在工作區「${res.workspaceName}」開啟新的 ${res.agent} CLI，#${selectedItem.id} 的內容已放入輸入框，確認後請自行按 Enter 送出`, 'success');
+          const why = res.matchReason ? `（${res.matchReason}）` : '';
+          showBanner(`已在工作區「${res.workspaceName}」${why}開啟新的 ${res.agent} CLI，#${selectedItem.id} 的內容已放入輸入框，確認後請自行按 Enter 送出`, 'success');
         }
       } catch (err) {
         showBanner(err.message || String(err), 'error');
       } finally {
         btnLaunchAgent.disabled = false;
+        // 傳送後 Agent 清單可能改變（新開或已關閉），重新載入避免下次選到不存在的 Agent
+        loadCurrentAgentsForDetail();
       }
     });
   }

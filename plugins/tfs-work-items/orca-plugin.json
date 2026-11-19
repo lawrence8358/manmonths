@@ -4,7 +4,7 @@
   "id": "tfs-work-items",
   "publisher": "manmonths",
   "name": "Azure DevOps",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "description": "人月維護的 Azure DevOps / 地端 TFS 工項互動面板，支援使用 PAT 查詢、新增（Task / Bug）、更新狀態、留言與一鍵派工給 Orca Agent。",
   "author": {
     "name": "人月",
@@ -12,7 +12,7 @@
   },
   "repository": "https://github.com/fuevaco/manmonths",
   "engines": {
-    "orca": ">=1.4.248"
+    "orca": ">=1.4.259"
   },
   "pluginApi": 1,
   "main": "worker/index.mjs",

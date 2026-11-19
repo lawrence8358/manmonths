@@ -256,6 +256,13 @@ html, body {
   gap: 8px;
 }
 
+/* 工項列表：卡片之間留間距，與專案標題左右切齊 */
+#view-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* Banner */
 .banner {
   padding: 8px 10px;
@@ -286,7 +293,6 @@ html, body {
 }
 .wi-card.is-task { border-left-color: var(--task-color); }
 .wi-card.is-bug { border-left-color: var(--bug-color); }
-.wi-card.is-grouped { margin-left: 8px; }
 .wi-card:hover {
   border-color: var(--accent);
   background: var(--hover-bg);

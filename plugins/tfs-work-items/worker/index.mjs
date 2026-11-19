@@ -2,6 +2,8 @@ import http from 'node:http';
 import https from 'node:https';
 import { spawn } from 'node:child_process';
 import { join as joinPath } from 'node:path';
+import { resolveTargetWorkspace, describeWorkspace, linkedRepoIdsFromRelations } from './workspace-target.mjs';
+import { sendTextToTerminal, findWorkspaceOfTerminal, focusTerminal } from './terminal-input.mjs';
 
 const SECRET_PAT_KEY = 'tfs_pat';
 
@@ -894,73 +896,74 @@ export default function activate(orca) {
       '請先閱讀並理解以上工項，等我確認後再開始動手。'
     ].filter(Boolean).join('；').slice(0, 4000);
 
-    const typeIntoTerminal = async (terminalId) => {
-      const sendRes = await orca.host.call('terminal.sendText', {
-        terminalId: String(terminalId),
-        text: draftPrompt,
-        enter: false
-      });
-      if (!sendRes?.accepted) {
-        throw makeError('無法將工項內容放入輸入框，請確認該終端機仍在開啟狀態。');
-      }
-    };
-
-    // agent.launch 是在背景開啟分頁，不會自動切換；這裡主動切到該終端機讓使用者看見
-    const focusTerminal = (terminalId) =>
-      orca.host.call('terminal.focus', { terminalId: String(terminalId) }).catch(() => null);
-
-    // 送給現有 Agent
+    // 送給現有 Agent。下拉選單是打開工項時載入的，使用者之後可能把那個 Agent 關掉；
+    // 終端機已不存在時改走下方「開新的 CLI」
+    let staleNote = '';
     if (input.terminalId) {
-      await typeIntoTerminal(input.terminalId);
-      await focusTerminal(input.terminalId);
-      const ctx = await orca.host.call('workspace.readContext').catch(() => null);
-      return {
-        ok: true,
-        mode: 'existing',
-        terminalId: input.terminalId,
-        workspaceName: ctx?.displayName || '目前視窗',
-        agent: '目前視窗的 Agent'
-      };
+      try {
+        await sendTextToTerminal(orca, input.terminalId, draftPrompt);
+        const ctx = await orca.host.call('workspace.readContext').catch(() => null);
+        return {
+          ok: true,
+          mode: 'existing',
+          terminalId: input.terminalId,
+          workspaceName: ctx?.displayName || '目前視窗',
+          agent: '目前視窗的 Agent'
+        };
+      } catch (err) {
+        const gone = err.code === 'terminal_gone' || !(await findWorkspaceOfTerminal(orca, input.terminalId));
+        if (!gone) throw err;
+        staleNote = '原本選的 Agent 已關閉，改開新的 CLI；';
+      }
     }
 
-    // 沒有現有 Agent：開新的 CLI
-    const ctx = await orca.host.call('workspace.readContext');
-    const listRes = await orca.host.call('workspace.list');
-    const workspaces = listRes?.workspaces || [];
-
-    let targetWorkspace = null;
-    if (ctx) {
-      targetWorkspace = workspaces.find((w) => w.name === ctx.displayName || w.branch === ctx.branch) || workspaces[0];
-    } else {
-      targetWorkspace = workspaces[0];
-    }
-
-    if (!targetWorkspace) {
-      throw makeError('找不到可用的 Orca 工作區，請先開啟一個專案或 Worktree。', 'unavailable');
-    }
-
+    // 依工項所屬的 TFS 專案／Repo 找對應的 Orca 工作區，再開新的 CLI
+    const target = await resolveTargetWorkspace(orca, {
+      tfsUrl: cfg.tfsUrl,
+      item: input,
+      fetchLinkedRepos: (id) => fetchLinkedRepos(cfg, id)
+    });
     const agentName = String(input.agent || cfg.defaultAgent || 'claude').trim();
 
     // 不帶 prompt 啟動（帶 prompt 時 Orca 會自動送出），待 CLI 就緒後只輸入文字、不按 Enter
     const res = await orca.host.call('agent.launch', {
-      workspaceId: targetWorkspace.id,
+      workspaceId: target.workspace.id,
       agent: agentName
     });
 
-    // 先切過去，讓使用者看到 CLI 正在啟動
-    await focusTerminal(res.terminalId);
-
-    await waitForAgentReady(orca, targetWorkspace.id, res.terminalId);
-    await typeIntoTerminal(res.terminalId).catch(() => {
-      throw makeError('已開啟新的 CLI，但無法將工項內容放入輸入框，請到該終端機手動貼上。');
+    // agent.launch 是在背景開啟分頁，不會自動切換；先切過去讓使用者看到 CLI 正在啟動
+    await focusTerminal(orca, res.terminalId);
+    await waitForAgentReady(orca, target.workspace.id, res.terminalId);
+    await sendTextToTerminal(orca, res.terminalId, draftPrompt).catch((err) => {
+      throw makeError(`已開啟新的 CLI，但無法將工項內容放入輸入框，請到該終端機手動貼上。（${err?.message || err}）`);
     });
-    await focusTerminal(res.terminalId);
 
-    return { ok: true, mode: 'new', terminalId: res.terminalId, workspaceName: targetWorkspace.name, agent: agentName };
+    return {
+      ok: true,
+      mode: 'new',
+      terminalId: res.terminalId,
+      workspaceName: describeWorkspace(target.workspace),
+      matchReason: `${staleNote}${target.reason}`,
+      agent: agentName
+    };
   });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 工項連結的 Git Repo（Commit / 分支 / PR），回傳 [{ project, repo }]（小寫），依連結次數多寡排序
+async function fetchLinkedRepos(cfg, id) {
+  const apiVersion = encodeURIComponent(cfg.apiVersion);
+  const item = await tfsRequest(cfg, `_apis/wit/workitems/${encodeURIComponent(id)}?$expand=relations&api-version=${apiVersion}`);
+  const repos = [];
+  for (const repoId of linkedRepoIdsFromRelations(item?.relations)) {
+    const repo = await tfsRequest(cfg, `_apis/git/repositories/${encodeURIComponent(repoId)}?api-version=${apiVersion}`).catch(() => null);
+    if (repo?.name) {
+      repos.push({ project: String(repo.project?.name || '').toLowerCase(), repo: String(repo.name).toLowerCase() });
+    }
+  }
+  return repos;
+}
 
 // 等 Agent CLI 進入可輸入狀態（waiting / done）；偵測不到時最多等 timeoutMs 後仍繼續
 async function waitForAgentReady(orca, workspaceId, terminalId, timeoutMs = 15000) {
